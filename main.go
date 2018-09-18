@@ -3,13 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
     "os"
     "strconv"
     "time"
+    "math"
     "encoding/binary"
     "github.com/op/go-logging"
     "github.com/boltdb/bolt"
+    "github.com/valyala/fasthttp"
 
 )
 
@@ -26,13 +27,6 @@ var m = make(map[string]*bolt.DB)
 type Password string
 func (p Password) Redacted() interface{} {
 	return logging.Redact(string(p))
-}
-
-func logger(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logs.Info(fmt.Sprintf("%s requested %s", r.RemoteAddr, r.URL))
-		h.ServeHTTP(w, r)
-	})
 }
 
 func loginit() {
@@ -65,24 +59,46 @@ func PathExists(path string) (bool, error) {
     return false, err
 }
 
-func push(w http.ResponseWriter, r *http.Request) {
-    r.ParseForm()
+func Int64ToByte(i int64) []byte {
+    bits := uint64(i)
+    bytes := make([]byte, 8)
+    binary.LittleEndian.PutUint64(bytes, bits)
+    return bytes
+}
 
-    ts, err := strconv.ParseInt(r.FormValue("ts"), 10, 64)
+func ByteToInt64(bytes []byte) int64 {
+    bits := binary.LittleEndian.Uint64(bytes)
+    return int64(bits)
+}
+
+func Float64ToByte(float float64) []byte {
+    bits := math.Float64bits(float)
+    bytes := make([]byte, 8)
+    binary.LittleEndian.PutUint64(bytes, bits)
+    return bytes
+}
+
+func ByteToFloat64(bytes []byte) float64 {
+    bits := binary.LittleEndian.Uint64(bytes)
+    return math.Float64frombits(bits)
+}
+
+func push(ctx *fasthttp.RequestCtx) {
+    ts, err := strconv.ParseInt(string(ctx.FormValue("ts")), 10, 64)
     if err != nil {
         log.Fatalln("ts atoi error !")
     }
 
-    value, err := strconv.ParseFloat(r.FormValue("value"), 64)
+    value, err := strconv.ParseFloat(string(ctx.FormValue("value")), 64)
     if err != nil {
         log.Fatalln("value atoi error !")
     }
 
-    metric := r.FormValue("metric")
-    host := r.FormValue("host")
+    metric := ctx.FormValue("metric")
+    host := string(ctx.FormValue("host"))
 
     
-    dbpath := "/home/coding/tmp/" + time.Unix(ts, 0).Format("2006/01/02") 
+    dbpath := "/home/coding/tmp/" + time.Unix(ts, 0).Format("2006/01/02")
     exist, err := PathExists(dbpath)
     if err != nil {
         fmt.Printf("get dir error![%v]\n", err)
@@ -95,54 +111,47 @@ func push(w http.ResponseWriter, r *http.Request) {
     }
     dbpath = dbpath + "/" + host + ".db"
 
-
-    v, exists := m[dbpath]
+    mkey := host + "-" + time.Unix(ts, 0).Format("2006/01/02")
+    v, exists := m[mkey]
     if (exists == false) {
         db, err := bolt.Open(dbpath, 0600, nil)
         if err != nil {
             fmt.Errorf("create bucket: %s", err)
         }
-        m[dbpath] = db
+        m[mkey] = db
     }
-    m[dbpath].Update(func(tx *bolt.Tx) error {
-        b, err := tx.CreateBucketIfNotExists([]byte(metric))
+    m[mkey].Update(func(tx *bolt.Tx) error {
+        b, err := tx.CreateBucketIfNotExists(metric)
         if err != nil {
             return fmt.Errorf("create bucket: %s", err)
         }
         Use(b)
         return nil
     })
-    m[dbpath].Update(func(tx *bolt.Tx) error {
-        b := tx.Bucket([]byte(metric))
-        bts := make([]byte, 8)
-        bvalue := make([]byte, 8)
-        binary.LittleEndian.PutUint64(bts, uint64(ts))
-        binary.LittleEndian.PutUint64(bvalue, uint64(value))
-        err := b.Put(bts, bvalue)
+    m[mkey].Update(func(tx *bolt.Tx) error {
+        b := tx.Bucket(metric)
+        err := b.Put(Int64ToByte(ts), Float64ToByte(value))
         if err != nil {
             fmt.Errorf("push bucket: %s", err)
         }
         Use(b)
         return nil
     })
-
+    logs.Info(fmt.Sprintf("%s %s %d %f", string(metric), host, ts, value))
     Use(metric, host, value, v)
-}
-
-func defaults(w http.ResponseWriter, r *http.Request) {
-    w.WriteHeader(404)
-    fmt.Fprintln(w, "404")
 }
 
 func main() {
     loginit()
-	h := http.NewServeMux()
-
-	h.HandleFunc("/push", push)
-	h.HandleFunc("/", defaults)
-
-	logs.Notice("Listen :8080")
-    err := http.ListenAndServe(":8080", logger(h))
-	logs.Fatal(err)
+    fhttp := func(ctx *fasthttp.RequestCtx) {
+        logs.Debug(fmt.Sprintf("%s requested %s", ctx.RemoteAddr(), ctx.URI()))
+        switch string(ctx.Path()) {
+            case "/push":
+                push(ctx)
+            default:
+                ctx.Error("not found", fasthttp.StatusNotFound)
+        }
+    }
+    fasthttp.ListenAndServe(":8080", fhttp)
 }
 

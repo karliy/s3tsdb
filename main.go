@@ -8,8 +8,10 @@ import (
     "time"
     "math"
     "strings"
+    "io/ioutil"
     "encoding/binary"
     "path/filepath"
+    "encoding/json"
     "github.com/op/go-logging"
     "github.com/boltdb/bolt"
     "github.com/valyala/fasthttp"
@@ -225,8 +227,21 @@ func expireddb(searchDir string) []string {
     return fileList
 }
 
-func dbmoveS3() {
-    credentials := credentials.NewStaticCredentials("xxx","xxx","")
+func cleanEmptyFolder(path string) {
+    dir, _ := ioutil.ReadDir(path)
+    for _, fi := range dir {
+        if fi.IsDir() {
+            cleanEmptyFolder(path + fi.Name() + "/")
+        }
+    }
+    dir, _ = ioutil.ReadDir(path)
+    if len(dir) == 0 {
+        fmt.Printf("delete dir %s\n", path)
+        os.Remove(path)
+    }
+}
+func dbmoveS3(ak string, sk string) {
+    credentials := credentials.NewStaticCredentials(ak, sk, "")
     s3Config := &aws.Config{
         Region: "BEIJING",
         Credentials: credentials,
@@ -267,15 +282,28 @@ func dbmoveS3() {
             Use(resp)
             os.Remove(dbpath)
         }
-        //清理空文件夹
+        cleanEmptyFolder(dbbase)
         time.Sleep(time.Hour)
     }
 }
 
+type configuration struct {
+    AK  string
+    SK  string
+}
+
 func main() {
+    file, _ := os.Open("conf.json")
+    defer file.Close()
+    decoder := json.NewDecoder(file)
+    conf := configuration{}
+    err := decoder.Decode(&conf)
+    if err != nil {
+        fmt.Println("Error:", err)
+    }
     loginit()
     go clearMkey()
-    go dbmoveS3()
+    go dbmoveS3(conf.AK, conf.SK)
     fhttp := func(ctx *fasthttp.RequestCtx) {
         logs.Debug(fmt.Sprintf("%s requested %s", ctx.RemoteAddr(), ctx.URI()))
         switch string(ctx.Path()) {

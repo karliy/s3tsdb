@@ -56,7 +56,13 @@ func loginit() {
     stdoutbackendFormatter := logging.NewBackendFormatter(stdoutbackend, logformat)
 	logfilebackendFormatter := logging.NewBackendFormatter(logfilebackend, logformat)
 
-    logging.SetBackend(stdoutbackendFormatter, logfilebackendFormatter)
+    stdoutbackendLeveled := logging.AddModuleLevel(stdoutbackendFormatter)
+	stdoutbackendLeveled.SetLevel(logging.INFO, "")
+
+    logfilebackendLeveled := logging.AddModuleLevel(logfilebackendFormatter)
+	logfilebackendLeveled.SetLevel(logging.INFO, "")
+
+    logging.SetBackend(stdoutbackendLeveled, logfilebackendLeveled)
 }
 
 func PathExists(path string) (bool, error) {
